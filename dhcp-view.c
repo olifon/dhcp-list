@@ -2,7 +2,7 @@
  * Simple DHCP Client
  * License : BSD
  * Author : Reindert Pelsma
- * Forked from: Samuel Jacob (samueldotj@gmail.com)
+ * DHCP-client : https://github.com/samueldotj/dhcp-client
  */
 #include <sys/types.h>
 #include <sys/socket.h>

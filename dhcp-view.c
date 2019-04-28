@@ -1,7 +1,8 @@
 /*
  * Simple DHCP Client
  * License : BSD
- * Author : Samuel Jacob (samueldotj@gmail.com)
+ * Author : Reindert Pelsma
+ * Forked from: Samuel Jacob (samueldotj@gmail.com)
  */
 #include <sys/types.h>
 #include <sys/socket.h>

@@ -30,6 +30,8 @@
 #include <arpa/inet.h>
 #include <pthread.h>
 #include <inttypes.h>
+#include <termios.h>
+
 
 typedef u_int32_t ip4_t;
 
@@ -198,12 +200,12 @@ time_t oldentrys[ENTRY_COUNT];
 int lastentrys[ENTRY_COUNT];
 
 
+uint8_t screenlock = 0;
+uint8_t lock = 0;
 
-int lock = 0;
-
-void reset_screen()
+void reset_screen(uint8_t forceprint)
 {
-        while(lock == 1);
+	while(lock == 1);
         lock = 1;
 	for(int i = 0; i < ENTRY_COUNT; i++)
 	{
@@ -211,23 +213,30 @@ void reset_screen()
 		{
 			uint8_t i1 = entrys[i]->time + 10 >= time(NULL);
 			uint8_t i2 = lastentrys[i];
-			if(i1 != i2)
+			if(i1 != i2 || forceprint > 0)
 			{
 				lastentrys[i] = i1;
-				dhcpserver_entry* entry = entrys[i];
-				struct in_addr source;
-				struct in_addr dest;
-				source.s_addr = entry->sourceip;
-				dest.s_addr = entry->givenip;
-				char* buf1 = strdup(ether_ntoa((struct ether_addr*)entry->mac));
-				char* buf2 = strdup(inet_ntoa(source));
-				char* buf3 = strdup(inet_ntoa(dest));
-				printf("%s\e[97m#%i %s %s %s %s (%" PRIu64 " sec ago) at %s\e[0m", (i1 ? "\e[42m" : "\e[41m"), (i + 1), (i1 ? "online " : "offline"), buf1, buf2, buf3, entry->time - oldentrys[i], ctime(&entry->time));
-				fflush(stdout);
-				free(buf1);
-				free(buf2);
-				free(buf3);
-				oldentrys[i] = entrys[i]->time;
+				if(screenlock == 0 || forceprint > 0) {
+					screenlock = 1;
+					dhcpserver_entry* entry = entrys[i];
+					struct in_addr source;
+					struct in_addr dest;
+					source.s_addr = entry->sourceip;
+					dest.s_addr = entry->givenip;
+					char* buf1 = strdup(ether_ntoa((struct ether_addr*)entry->mac));
+					char* buf2 = strdup(inet_ntoa(source));
+					char* buf3 = strdup(inet_ntoa(dest));
+					char* buf4 = strdup(ctime(&entry->time));
+					buf4[strlen(buf4) - 1] = '\0';
+					printf("%s\e[97m#%i %s %s %s %s (%" PRIu64 " sec ago) at %s\e[0m\n", (i1 ? "\e[42m" : "\e[41m"), (i + 1), (i1 ? "online " : "offline"), buf1, buf2, buf3, entry->time - oldentrys[i], buf4);
+					fflush(stdout);
+					free(buf1);
+					free(buf2);
+					free(buf3);
+					free(buf4);
+					oldentrys[i] = entrys[i]->time;
+					screenlock = 0;
+				}
 			}
 		}
 	}
@@ -464,6 +473,41 @@ void* thread_work(void* arg)
 	okwork = 1;
 }
 
+int scan = 0;
+
+void next_scan(uint8_t sl)
+{
+	screenlock = 1;
+	lock = 1;
+	scan++;
+	time_t today = time(NULL);
+	printf("Scan #%i at %s", scan, ctime(&today));
+    	for(int i = 0; i < ENTRY_COUNT; i++)
+    	{
+        	lastentrys[i] = -1;
+    	}
+	lock = 0;
+	if(sl > 0) sleep(10);
+	reset_screen(1);
+	screenlock = 0;
+}
+
+void* scan_work(void* arg)
+{
+	for(;;)
+	{
+		struct termios t;
+		tcgetattr(STDIN_FILENO, &t);
+		struct termios ot = t;
+		t.c_lflag &= ~ECHO;
+		tcsetattr(STDIN_FILENO, TCSANOW, &t);
+		getchar();
+		tcsetattr(STDIN_FILENO, TCSANOW, &ot);
+		printf("\n");
+		next_scan(1);
+	}
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -492,11 +536,6 @@ main(int argc, char *argv[])
         oldentrys[i] = today;
     }
 
-    for(int i = 0; i < ENTRY_COUNT; i++)
-    {
-        lastentrys[i] = 0;
-    }
-
     /* Get the MAC address of the interface */
     result = get_mac_address(dev, mac);
     if (result != 0)
@@ -523,14 +562,18 @@ main(int argc, char *argv[])
         goto done;
     }
 
-    pthread_t thread;
+    next_scan(0);
+
+    pthread_t listen;
+    pthread_t scan;
     okwork = 0;
-    pthread_create(&thread, NULL, &thread_work, NULL);
+    pthread_create(&listen, NULL, &thread_work, NULL);
+    pthread_create(&scan, NULL, &scan_work, NULL);
     while(okwork == 0)
     {
 	sleep(2);
         if(okwork == 0) dhcp_discovery(mac);
-	reset_screen();
+	reset_screen(0);
     }
 
 done:
@@ -538,4 +581,3 @@ done:
 
     return result;
 }
-

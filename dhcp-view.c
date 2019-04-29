@@ -477,6 +477,7 @@ int scan = 0;
 
 void next_scan(uint8_t sl)
 {
+	while(lock == 1 || screenlock == 1);
 	screenlock = 1;
 	lock = 1;
 	scan++;

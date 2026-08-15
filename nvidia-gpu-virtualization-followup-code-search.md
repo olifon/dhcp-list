@@ -6,9 +6,11 @@ Compiled 2026-08-15. Closes the coverage gap flagged in `nvidia-gpu-virtualizati
 
 ## 1. Verdict on the null
 
-**The null holds for approach C as defined — but it is now a *qualified* null, and one significant qualification is new.**
+**Approach C: the null holds, now qualified in two ways. Approach B: overturned — a third independent implementation exists, and it is a 0-star repository.**
 
-No project anywhere implements a host-side GSP RPC responder: a VMM that impersonates GSP firmware, answers the stock NVIDIA guest driver's RPCs with correct semantics, and executes the resulting work on a real host GPU. The two decisive co-occurrence queries — RM/GSP register identifiers appearing alongside QEMU `MemoryRegionOps`, and GSP RPC structures appearing alongside `vfio`/`KVM_*` — returned **zero matches** across Sourcegraph's entire index.
+No project anywhere implements a host-side GSP RPC responder: a VMM that impersonates GSP firmware, answers the stock NVIDIA guest driver's RPCs with correct semantics, and executes the resulting work on a real host GPU. The two decisive co-occurrence queries — RM/GSP register identifiers appearing alongside QEMU `MemoryRegionOps`, and GSP RPC structures appearing alongside `vfio`/`KVM_*` — returned **zero matches** across Sourcegraph's entire index. (Their GitHub-side equivalents were scripted but never executed; see §3c and §6.)
+
+**The approach-B picture did change.** `straylight-software/isospin-microvm` — 0 stars, 0 forks, 52 commits — ships `nvidia-shim.ko`, a guest kernel module presenting fake `/dev/nvidiactl` and `/dev/nvidia0` and forwarding the entire NVIDIA RM ioctl surface over `AF_VSOCK` to a broker running inside a different VM that owns the GPU via VFIO. That is approach B exactly as the original brief defined it, and it is the first instance found that is neither Microsoft's GPU-PV nor NVIDIA's own vGPU. It is incomplete in a revealing place: `mmap` is explicitly unimplemented ("control path only") and UVM ioctls are stubbed, so CUDA cannot yet run through it. My previous report said no such project existed; that was wrong, and it was wrong specifically because the repository has zero stars and Sourcegraph does not index it.
 
 But symbol search surfaced something repo-level search could not: **one half of approach C has already been built and published — twice, independently, by two security-research groups.** `0xf4b1/bsod-kernel-fuzzing` (TU Berlin) and `yonsei-sslab/moneta` (Yonsei SSLab / DistriNet, NDSS 2025) each ship a QEMU device model — `hw/pci-replay/pci-nvidia.c` and `hw/fakedev/pci-nvidia.c` respectively — that fabricates a synthetic NVIDIA PCI device complete with `MemoryRegionOps` on the real BAR layout, so an NVIDIA kernel driver attaches to hardware that does not exist. Both were built for driver fuzzing; BSOD found three CVEs. Neither implements GSP semantics — they answer MMIO from recorded register values — so no GPU work executes. That is precisely the boundary: *getting an NVIDIA driver to attach to a fake device in a VMM is done, published and peer-reviewed; making that fake device functional is not.*
 
@@ -70,9 +72,7 @@ rpc_message_header_v AND (vfio OR KVM_SET)                  -> NO MATCHES
 
 ### TIER 2 — guest-side NVIDIA RM ioctl forwarder over a VM transport, not already in the previous report
 
-**None found.**
-
-Worth recording as a related negative: NVIDIA's own guest→host escape remains the only implementation of this shape, and it is still closed source. Nothing in Rust, Go, Python, C++ or Zig re-implements it.
+**One found — `straylight-software/isospin-microvm`.** Surfaced only by the user's GitHub code-search run; see §3c for the full characterisation. It is the first approach-B implementation located that is neither Microsoft's GPU-PV nor NVIDIA's own vGPU: a guest kernel module (`nvidia-shim.ko`) that presents fake `/dev/nvidiactl` and `/dev/nvidia0` and forwards the full RM ioctl surface over `AF_VSOCK` to a broker in a different VM. **0 stars, 0 forks, 52 commits** — precisely the long-tail case Sourcegraph could not see.
 
 ### TIER 3 — partial: public GSP/RM wire-format documentation, synthetic-device work, stalled attempts
 
@@ -120,6 +120,59 @@ The first Sourcegraph pass ran these at `count:100` without path filters, so hun
 Worth recording as a methodological note: two of the six symbol groups from the brief are **too short or too generic to be usable as literal code-search terms** without a distinctive suffix. Anyone repeating this should use `FWSEC_FRTS`/`GspFwWprMeta` rather than `FWSEC`/`WPR2`, and `NVA083_ALLOCATION_PARAMETERS` rather than `0x0000a083`.
 
 Only three repositories recur across all six groups, and all three were already characterised: **tinygrad** (independent Python GSP/RM client), **`microsoft/vattention`** (a vendored copy of open-gpu-kernel-modules, i.e. NVIDIA's own source, not a reimplementation), and **`eunomia-bpf/gpu_ext`** (documentation and a preemption patch).
+
+### 3c. The `gh-code-search-queries.sh` run — first TIER 2 hit
+
+The user ran the script. **10 of 16 queries completed; 6 failed and the co-occurrence group never ran.**
+
+**What broke (my bug, not GitHub's).** All six `G_lang_*` queries died with `HTTP 422 ERROR_TYPE_QUERY_PARSING_FATAL`. I had put the qualifier inline in the query string, and `gh search code` re-quoted everything after it, producing `language:"rust NOT path:nova-core NOT path:nouveau …"` as a single quoted value. The fix is the `--language` flag rather than an inline qualifier; the script in this repo has been corrected. The **`H_*` co-occurrence group — the queries that would actually prove approach C — never executed**, because the run stopped after G.
+
+**What completed.** Ten symbol queries, 170 unique repositories, each query capped at the `--limit 100` I set (so all ten are truncated — GitHub had more). One clean negative worth recording: `NVA083_ALLOCATION_PARAMETERS` returned **zero results** with no error, outside the excluded repositories.
+
+After filtering already-investigated repos and the ~40 vendored copies of `open-gpu-kernel-modules` and Tegra display-driver forks, one finding matters and three are worth recording.
+
+#### ⭐ `straylight-software/isospin-microvm` — TIER 2, the first non-Microsoft, non-NVIDIA approach B
+
+0 stars · 0 forks · 52 commits · MIT · Rust + Nix + C. README: *"GPU passthrough and multiplexing for Firecracker VMs. Isospin eliminates the ~20 second GPU cold boot penalty by keeping a 'GPU VM' with the real NVIDIA driver running, while lightweight worker VMs connect instantly via the gpu-broker."*
+
+Architecture, verbatim from the README diagram:
+
+- **GPU VM** — Cloud Hypervisor + VFIO, running real `nvidia.ko` 580.95.05 against an **RTX PRO 6000 Blackwell (128 GB)**, plus `gpu-broker` listening on **vsock:9999**.
+- **Host** — `vsock-bridge`, bridging Cloud Hypervisor vsock ↔ Firecracker vsock.
+- **Worker VM** — Firecracker, boots in <1 s, loads `nvidia-shim.ko`, which presents `/dev/nvidiactl` and `/dev/nvidia0` *"proxied to broker"*. *"Applications use GPU instantly, no driver initialization."*
+
+`gpu-broker/kernel/nvidia-shim.c` (1,260 lines) is the guest module. Its own header states the design:
+
+> `nvidia-shim.ko - GPU broker shim for ioctl forwarding` … `This module intercepts NVIDIA ioctls and forwards them to the GPU broker via vsock.`
+> GUEST MODE: `nvidia-shim.ko ───vsock CID=2───► real nvidia.ko`, `/dev/nvidiactl (fake)` → `/dev/nvidiactl (real)`
+> HOST MODE: *"Runs on host. Forwards ioctls to broker inside a VM that has the real GPU. This is the 'GPU server' model where the VM owns the GPU."*
+
+It forwards the full RM surface — `NV_ESC_RM_ALLOC` (0x2B), `RM_CONTROL` (0x2A), `RM_FREE` (0x29), `RM_ALLOC_MEMORY` (0x27), `RM_ALLOC_OBJECT` (0x28), `RM_DUP_OBJECT` (0x34), `RM_SHARE` (0x35), `RM_MAP_MEMORY` (0x4E), `RM_UNMAP_MEMORY` (0x4F) — plus the frontend escapes (`CARD_INFO` 200, `REGISTER_FD` 201, `ALLOC_OS_EVENT` 206, `STATUS_CODE` 209, `CHECK_VERSION_STR` 210, `ATTACH_GPUS_TO_FD` 212, `SYS_PARAMS` 214, `GET_PCI_INFO` 215, `EXPORT_DEVICE_FD` 218), over `AF_VSOCK` via `sock_create_kern(&init_net, AF_VSOCK, SOCK_STREAM, …)`. The Rust broker (`gpu-broker/src/main.rs`, 767 lines) describes itself as *"Multiplexes NVIDIA RM API calls from multiple VMs … Broker translates handles, validates, and forwards to real /dev/nvidiactl. The GPU driver stays hot - no cold boot penalty per VM."*
+
+**Where it stops, verified in source rather than inferred.** The control plane is implemented; the data plane is not:
+
+- `nvidia_shim_mmap()` ends in `pr_warn("nv-shim: mmap not implemented (control path only)\n")`.
+- *"UVM ioctls are stubbed - we just return success."*
+- One RM path notes *"out_params copy not yet implemented."*
+
+So CUDA cannot yet run through it. That is not an incidental gap — it is exactly the problem gVisor's `nvproxy` design document identifies as the hard part of NVIDIA ioctl proxying (`NV_ESC_RM_MAP_MEMORY` prepares a mapping that a later `mmap` on a *different* fd consumes, possibly from a different process). Isospin has done the tractable half.
+
+Two further notes. It surfaced in GSP symbol searches only because it vendors `nvidia-open/`; its own code contains no GSP work — it forwards ioctls above the GSP layer entirely, which is why it can work at all. And it is a direct, concrete answer to question 3h of the first report: someone **is** building microVM GPU multiplexing, on Firecracker plus Cloud Hypervisor, though not yet multi-tenant in the simultaneous-sharing sense.
+
+#### Also new, TIER 3
+
+| Project | What it is | Why it's recorded |
+|---|---|---|
+| **`SLM-OS/SLM-Operating-System`** | Bare-metal OS in C and Rust for edge LLM inference; CS capstone, Sonoma State University. `kernel/gpu/nvidia/{gsp,falcon,nvidia_vbios,bringup}` plus `host-tools/gsp-harness/` — a Linux userspace CLI wrapping the shared GSP-RM core. | The **fourth** independent from-scratch NVIDIA GSP effort (after nova-core, miku-os, narf) — and the one that got furthest. `docs/gpu.md`, April 2026: *"GPU compute is working end-to-end on Jetson GA10B … MNIST inference dispatches end-to-end on the GA10B GPU from SLM-OS post-kexec"* using `REPORT_SEMAPHORE_EXECUTE` (Volta+ `AMPERE_COMPUTE_B`). Client side. |
+| **`apopple-nvidia/nova-gsp-binding-generator`** | Alistair Popple (NVIDIA); generates nova-core's GSP Rust bindings from open-gpu-kernel-modules headers (`bindings_helper.h`, `nvidia-open-gpu-symbols.txt`). | Directly addresses the automated-ABI-generation problem LWN flagged for nouveau (§4) — the GSP header churn that makes any long-lived GSP consumer expensive. |
+| **`olealgoritme/nv_mmio`** | *"Taken from envytools project. dumps mmio registers from your nvidia gpu."* Includes `include/ampere/ga100/dev_boot.h`. | Tooling of exactly the kind BSOD and Moneta needed to populate their register tables — the first step anyone building a device model takes. |
+
+#### Recorded as NOT hits, so they aren't re-investigated
+
+- **`ovg-project/GVM`** (Open Virtual GPU project, 24★, 81 commits) — *"an OS-level GPU virtualization layer which achieves hardware-like performance isolation while preserving the flexibility of software-based sharing."* **Process-level** isolation with cgroup-like APIs (memory limits, compute priorities 0–15, process freezing); requires both a patched NVIDIA driver and a CUDA intercept layer. Class: **container/OS-level sharing + driver-patching**, not a VM boundary. `ovg-project/gvm-nvidia-driver-modules` and `easonycliu/gvm-nvidia-driver-modules` are its vendored open-gpu-kernel-modules 575.64.05. Note this is a *different* GVM from Arc-Compute's GPU Virtual Machine project in the first report — same acronym, unrelated codebase.
+- **`sith-lab/gpubreach`** — *"GPUBreach: Privilege Escalation Attacks on GPUs using Rowhammer"*, IEEE S&P (Oakland) 2026. GPU security research, not virtualization.
+- **CMP-unlock cluster** — `Consensus-Protocol/cmp170hx`, `abobasixseven/unlock-cmp-170hx`, `bendy2/cmp90hx`, `d3dx9/cmpunlocker`, `zerobitcopy/cmp-easyunlock`, `YiHsiangZhan/KAYGOD`. Unlocking NVIDIA CMP mining cards. **Driver/VBIOS patching**, the excluded class.
+- **~40 vendored `open-gpu-kernel-modules` copies inside research repos** — `csl-iisc/SUV-MICRO24`, `romnn/nvidia-physical-addr`, `proxion7/fgpu20`, `noob512/uvm`, `thustorage/GPreempt`, `RixinLiu/Fault-Resilient-MPS`, `xuao1/open-gpu-kernel-modules-535.104.05`, and others. The GSP symbols in these are NVIDIA's own shipped source, not reimplementations. Same for the Tegra/Jetson display forks (`OE4T/*`, `LineageOS/android_kernel_nvidia_display`, `SkrilaxCZ/l4t-nvdisplay`, `nvidia-mirror/*`).
 
 ### Explicitly NOT hits (confirmed, so they don't get re-investigated)
 

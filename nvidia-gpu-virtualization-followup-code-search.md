@@ -104,6 +104,23 @@ The user ran GitHub-wide code search externally and supplied the raw output: 103
 
 **What this run changes and does not change.** It closes the §2 gap in the direction I predicted: symbol-level GitHub search *did* surface repositories Sourcegraph could not see, and every one of them was in the star band I identified as Sourcegraph's blind spot. But the substantive conclusion is unaltered, and is now better supported: with GitHub-wide code search actually executed against the core GSP symbols, **still nothing implements a host-side GSP RPC responder.** The independent reimplementations that exist — tinygrad (Python), miku-os (Rust), narf (Rust), nova-core (Rust), nouveau (C) — are all clients, and the two synthetic-device projects that exist are both fuzzing harnesses with no GSP layer. Five independent parties have now written the GSP RPC codec; zero have written the other end of it.
 
+### 3b. The six emulation-side symbol groups, re-run with exclusions
+
+The first Sourcegraph pass ran these at `count:100` without path filters, so hundreds of Linux-kernel forks vendoring `drivers/gpu/nova-core/gsp/` could have crowded out long-tail results. All six were therefore re-run with `-file:nouveau -file:nova-core -repo:open-gpu-kernel-modules` (and `-repo:NVIDIA/` for group 6).
+
+| # | Query | Result |
+|---|---|---|
+| 1 | `GSP_MSG_QUEUE_ELEMENT` | tinygrad (+2 openpilot vendored copies), `microsoft/vattention`. **Nothing new.** |
+| 2 | `msgqTxHeader OR msgqRxHeader` | tinygrad (+vendored), `microsoft/vattention`. **Nothing new.** |
+| 3 | `rpc_message_header_v` | tinygrad (+vendored), `microsoft/vattention`, `eunomia-bpf/gpu_ext`. **Nothing new.** |
+| 4 | `NV_PMC_BOOT_42 OR pmcBoot42` | tinygrad (+vendored), `microsoft/vattention`. **Nothing new.** |
+| 5 | `booter_load OR FWSEC OR WPR2` | **Query unusable as written** — `WPR2` collides with a constant in `golang.org/x/sys/unix` FreeBSD errno tables, flooding results with podman/kubernetes/moby/golang vendor directories. Retried as `booter_load` and `FWSEC_FRTS OR frtsCmd OR FwsecFrts`: only `microsoft/vattention`, plus unrelated `booter` matches (WiiFlow, an Android layout file, linux-firmware manifests). **Nothing new.** |
+| 6 | `NVA083 OR 0x0000a083` | **Query unusable as written** — the bare hex matches binary/data blobs (PostgreSQL GB18030 conversion maps, Flipper Zero sub-GHz protocols, CMSIS DSP test vectors, apriltag families). Retried as `NVA083_ALLOCATION_PARAMETERS OR NVA083_GRID_DISPLAYLESS OR cla083`: only `microsoft/vattention`. **Nothing new.** |
+
+Worth recording as a methodological note: two of the six symbol groups from the brief are **too short or too generic to be usable as literal code-search terms** without a distinctive suffix. Anyone repeating this should use `FWSEC_FRTS`/`GspFwWprMeta` rather than `FWSEC`/`WPR2`, and `NVA083_ALLOCATION_PARAMETERS` rather than `0x0000a083`.
+
+Only three repositories recur across all six groups, and all three were already characterised: **tinygrad** (independent Python GSP/RM client), **`microsoft/vattention`** (a vendored copy of open-gpu-kernel-modules, i.e. NVIDIA's own source, not a reimplementation), and **`eunomia-bpf/gpu_ext`** (documentation and a preemption patch).
+
 ### Explicitly NOT hits (confirmed, so they don't get re-investigated)
 
 - `intel/nemu` → `hw/vfio/quirks/pci-nvidia.c` is a **VFIO passthrough quirk**, not a device model.
@@ -147,7 +164,7 @@ Neither is malicious content; both are anti-automation measures, and both are re
 
 | Gap | Why it matters | What closes it |
 |---|---|---|
-| ~~GitHub-wide code search never ran~~ — **closed**, with a residue | The user ran `gh search code` and supplied 103 unique repositories; four new projects surfaced, all in the 2–27 star band, none overturning the null (§3a). **Residue:** the supplied output covers `NV_VGPU_MSG_FUNCTION` and `pciDeviceId`-shaped queries. The emulation-side symbols — `GSP_MSG_QUEUE_ELEMENT`, `msgqTxHeader`, `rpc_message_header_v`, `NV_PMC_BOOT_42`, `booter_load`/`FWSEC`/`WPR2`, and `NVA083` — were not in the two result sets. | Re-run `gh search code` for those six symbol groups with `-user:NVIDIA -path:open-gpu-kernel-modules -path:nova-core -path:nouveau` and `--language rust,go,python,cpp,zig`. Ten minutes, and it would make the null close to exhaustive. |
+| ~~GitHub-wide code search never ran~~ — **mostly closed; six symbol groups re-run on Sourcegraph, GitHub side still open** | The user ran `gh search code` and supplied 103 unique repositories; four new projects surfaced, all in the 2–27 star band, none overturning the null (§3a). The six emulation-side symbol groups absent from that output have since been **re-run on Sourcegraph with kernel-tree and NVIDIA-repo exclusions** (§3b) — **nothing new**. GitHub-side confirmation of those six is still outstanding: `api.github.com/search/code` re-tested and still returns **403**. | Run `gh-code-search-queries.sh` (committed alongside this report). It encodes all six groups plus the co-occurrence queries that would actually prove approach C, with the noise filters and a final diff against everything already investigated. |
 | **Whether Moneta's `fakedev` can carry a GSP-era driver further than BSOD's** | Moneta targets driver 530.41.03 on an emulated RTX 3060 — squarely GSP-era hardware — yet its device model contains no GSP or Falcon handling at all. Either the patched guest driver disables the GSP path, or the snapshot-restore approach sidesteps boot entirely. Which one it is determines how much of the GSP problem is genuinely avoidable. | Read `guest/nvidia.patch` in the Moneta tree and the NDSS 2025 paper's methodology section. |
 | **grep.app** | Independent index with different coverage; would cross-check Sourcegraph's blind spot. | Any network path not fingerprinted by Vercel's bot protection — a residential IP or a browser session. |
 | **Gitee / Chinese forges unverified** | The API returned empty for every query and I cannot prove that means "no results". Chinese GPU-virtualization work is active (HAMi, cGPU, qGPU all originate there). | A working Gitee API token, or manual browsing of `search.gitee.com`. Also worth checking CSDN and Zhihu for write-ups that never became repos. |
